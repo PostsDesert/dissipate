@@ -1,0 +1,24 @@
+{
+  "name": "dissipate-frontend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "solid-js": "^1.8",
+    "@solidjs/router": "^0.10",
+    "idb-keyval": "^6.2",
+    "date-fns": "^3.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0",
+    "vite-plugin-pwa": "^0.17",
+    "typescript": "^5.3",
+    "vite-plugin-solid": "^2.7"
+  }
+}

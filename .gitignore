@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+*.db
+*.db-shm
+*.db-wal
+target/
+sqlx-data.json
+.DS_Store
+sqlite
+sqlite3

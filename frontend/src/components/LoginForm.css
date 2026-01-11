@@ -1,0 +1,124 @@
+.login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+    max-width: 400px;
+    padding: 32px;
+    background: var(--bg-secondary);
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+}
+
+.login-title {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-align: center;
+}
+
+.login-subtitle {
+    margin: -12px 0 8px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.login-error {
+    padding: 12px;
+    border-radius: 8px;
+    background: rgba(224, 36, 94, 0.1);
+    color: var(--error);
+    font-size: 14px;
+    text-align: center;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.form-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.form-input {
+    padding: 12px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 16px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(29, 161, 242, 0.2);
+}
+
+.form-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.form-input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.5;
+}
+
+.login-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 14px;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: white;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.2s;
+}
+
+.login-button:hover:not(:disabled) {
+    background: #1a91da;
+    transform: translateY(-1px);
+}
+
+.login-button:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.login-button:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.login-footer {
+    display: flex;
+    justify-content: center;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+}
+
+.create-account-button {
+    padding: 8px 16px;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.create-account-button:hover {
+    text-decoration: underline;
+}

@@ -1,10 +1,26 @@
-export default function Login() {
-  return (
-    <div style="display: flex; justify-content: center; align-items: center; min-height: 100vh;">
-      <div style="padding: 2rem; background: var(--bg-secondary); border-radius: 8px;">
-        <h1>Login</h1>
-        <p>Login page coming soon</p>
-      </div>
-    </div>
-  )
-}
+import type { Component } from 'solid-js';
+import { useNavigate } from '@solidjs/router';
+import { LoginForm } from '../components/LoginForm';
+import { ThemeToggle } from '../components/ThemeToggle';
+import './Login.css';
+
+export const Login: Component = () => {
+    const navigate = useNavigate();
+
+    const handleLoginSuccess = () => {
+        navigate('/', { replace: true });
+    };
+
+    return (
+        <div class="login-page">
+            <div class="login-header">
+                <ThemeToggle />
+            </div>
+            <main class="login-main">
+                <LoginForm onSuccess={handleLoginSuccess} />
+            </main>
+        </div>
+    );
+};
+
+export default Login;

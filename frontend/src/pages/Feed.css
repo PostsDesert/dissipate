@@ -1,0 +1,93 @@
+.feed-page {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+    background: var(--bg-primary);
+    /* Padding for fixed input at bottom */
+    padding-bottom: 100px;
+}
+
+.feed-header {
+    position: sticky;
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-color);
+    z-index: 100;
+}
+
+.feed-title {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.feed-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.header-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    font-size: 18px;
+    transition: background 0.2s;
+}
+
+.header-button:hover {
+    background: var(--border-color);
+}
+
+.feed-main {
+    flex: 1;
+    padding: 16px;
+}
+
+.feed-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+}
+
+.feed-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+    text-align: center;
+}
+
+.feed-empty p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 16px;
+}
+
+.feed-empty p:first-child {
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.message-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 640px;
+    margin: 0 auto;
+}

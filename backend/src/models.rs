@@ -1,205 +1,315 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
+/// User database model
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct User {
-    pub id: Uuid,
+    pub id: String,
     pub email: String,
     pub username: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub password_hash: String,
+    pub salt: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl User {
+    /// Create a new user with generated UUID and timestamps
+    pub fn new(email: String, username: String, password_hash: String, salt: String) -> Self {
+        let now = Utc::now().to_rfc3339();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            username,
+            password_hash,
+            salt,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    /// Convert to public user response (without sensitive fields)
+    pub fn to_public(&self) -> UserResponse {
+        UserResponse {
+            id: self.id.clone(),
+            email: self.email.clone(),
+            username: self.username.clone(),
+        }
+    }
+}
+
+/// Public user response (excludes sensitive fields)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UserResponse {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+}
+
+/// Message database model
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Message {
-    pub id: Uuid,
-    pub user_id: Uuid,
+    pub id: String,
+    pub user_id: String,
     pub content: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl Message {
+    /// Create a new message with generated UUID and timestamps
+    pub fn new(user_id: String, content: String) -> Self {
+        let now = Utc::now().to_rfc3339();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            user_id,
+            content,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    /// Create a new message with a client-provided ID (for offline sync)
+    pub fn with_id(id: String, user_id: String, content: String) -> Self {
+        let now = Utc::now().to_rfc3339();
+        Self {
+            id,
+            user_id,
+            content,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    /// Convert to API response format
+    pub fn to_response(&self) -> MessageResponse {
+        MessageResponse {
+            id: self.id.clone(),
+            content: self.content.clone(),
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+        }
+    }
+}
+
+/// Message response for API
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageResponse {
+    pub id: String,
+    pub content: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// JWT Claims
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    pub user_id: String,
+    pub exp: usize,
+}
+
+// ============ Request DTOs ============
+
+#[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct LoginResponse {
-    pub token: String,
-    pub user: User,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct CreateMessageRequest {
-    pub id: Option<Uuid>,
     pub content: String,
+    #[serde(default)]
+    pub id: Option<String>, // Optional client-generated ID for offline sync
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UpdateMessageRequest {
     pub content: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct SuccessResponse {
-    pub success: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UpdateEmailRequest {
     pub email: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UpdateUsernameRequest {
     pub username: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UpdatePasswordRequest {
     pub current_password: String,
     pub new_password: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct MessagesQuery {
-    pub since: Option<String>,
-}
+// ============ Response DTOs ============
 
-#[derive(Debug, Serialize)]
-pub struct MessagesResponse {
-    pub messages: Vec<Message>,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub user: UserResponse,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Claims {
-    pub user_id: Uuid,
-    pub exp: usize,
+pub struct MessagesResponse {
+    pub messages: Vec<MessageResponse>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SuccessResponse {
+    pub success: bool,
+}
+
+impl SuccessResponse {
+    pub fn new() -> Self {
+        Self { success: true }
+    }
+}
+
+impl Default for SuccessResponse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============ Query Parameters ============
+
+#[derive(Debug, Deserialize, Default)]
+pub struct MessagesQuery {
+    pub since: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
-    fn test_user_creation() {
-        let id = Uuid::new_v4();
-        let email = "test@example.com".to_string();
-        let username = "testuser".to_string();
-        let now = Utc::now();
+    fn test_user_new_creates_valid_user() {
+        let user = User::new(
+            "test@example.com".to_string(),
+            "testuser".to_string(),
+            "hash123".to_string(),
+            "salt123".to_string(),
+        );
 
-        let user = User {
-            id,
-            email: email.clone(),
-            username: username.clone(),
-            created_at: now,
-            updated_at: now,
-        };
-
-        assert_eq!(user.id, id);
-        assert_eq!(user.email, email);
-        assert_eq!(user.username, username);
+        assert!(!user.id.is_empty());
+        assert_eq!(user.email, "test@example.com");
+        assert_eq!(user.username, "testuser");
+        assert_eq!(user.password_hash, "hash123");
+        assert_eq!(user.salt, "salt123");
+        assert!(!user.created_at.is_empty());
+        assert_eq!(user.created_at, user.updated_at);
+        
+        // Verify UUID format
+        Uuid::parse_str(&user.id).expect("User ID should be valid UUID");
     }
 
     #[test]
-    fn test_message_creation() {
-        let id = Uuid::new_v4();
-        let user_id = Uuid::new_v4();
-        let content = "Hello, world!".to_string();
-        let now = Utc::now();
+    fn test_user_to_public_excludes_sensitive_data() {
+        let user = User::new(
+            "test@example.com".to_string(),
+            "testuser".to_string(),
+            "hash123".to_string(),
+            "salt123".to_string(),
+        );
 
-        let message = Message {
-            id,
-            user_id,
-            content: content.clone(),
-            created_at: now,
-            updated_at: now,
-        };
+        let public = user.to_public();
 
-        assert_eq!(message.id, id);
+        assert_eq!(public.id, user.id);
+        assert_eq!(public.email, user.email);
+        assert_eq!(public.username, user.username);
+    }
+
+    #[test]
+    fn test_message_new_creates_valid_message() {
+        let user_id = Uuid::new_v4().to_string();
+        let message = Message::new(user_id.clone(), "Hello, world!".to_string());
+
+        assert!(!message.id.is_empty());
         assert_eq!(message.user_id, user_id);
-        assert_eq!(message.content, content);
+        assert_eq!(message.content, "Hello, world!");
+        assert!(!message.created_at.is_empty());
+        assert_eq!(message.created_at, message.updated_at);
+        
+        // Verify UUID format
+        Uuid::parse_str(&message.id).expect("Message ID should be valid UUID");
     }
 
     #[test]
-    fn test_login_request() {
-        let request = LoginRequest {
-            email: "test@example.com".to_string(),
-            password: "password123".to_string(),
-        };
+    fn test_message_with_id_uses_provided_id() {
+        let custom_id = Uuid::new_v4().to_string();
+        let user_id = Uuid::new_v4().to_string();
+        let message = Message::with_id(
+            custom_id.clone(),
+            user_id.clone(),
+            "Test content".to_string(),
+        );
 
-        assert_eq!(request.email, "test@example.com");
-        assert_eq!(request.password, "password123");
+        assert_eq!(message.id, custom_id);
+        assert_eq!(message.user_id, user_id);
+        assert_eq!(message.content, "Test content");
     }
 
     #[test]
-    fn test_create_message_request() {
-        let request = CreateMessageRequest {
-            id: Some(Uuid::new_v4()),
-            content: "Hello, world!".to_string(),
-        };
+    fn test_message_to_response() {
+        let message = Message::new(
+            Uuid::new_v4().to_string(),
+            "Test message".to_string(),
+        );
 
-        assert!(!request.content.is_empty());
-        assert!(request.id.is_some());
-    }
+        let response = message.to_response();
 
-    #[test]
-    fn test_update_message_request() {
-        let request = UpdateMessageRequest {
-            content: "Updated content".to_string(),
-        };
-
-        assert_eq!(request.content, "Updated content");
-    }
-
-    #[test]
-    fn test_update_email_request() {
-        let request = UpdateEmailRequest {
-            email: "newemail@example.com".to_string(),
-        };
-
-        assert_eq!(request.email, "newemail@example.com");
-    }
-
-    #[test]
-    fn test_update_username_request() {
-        let request = UpdateUsernameRequest {
-            username: "newusername".to_string(),
-        };
-
-        assert_eq!(request.username, "newusername");
-    }
-
-    #[test]
-    fn test_update_password_request() {
-        let request = UpdatePasswordRequest {
-            current_password: "oldpassword".to_string(),
-            new_password: "newpassword".to_string(),
-        };
-
-        assert_eq!(request.current_password, "oldpassword");
-        assert_eq!(request.new_password, "newpassword");
+        assert_eq!(response.id, message.id);
+        assert_eq!(response.content, message.content);
+        assert_eq!(response.created_at, message.created_at);
+        assert_eq!(response.updated_at, message.updated_at);
     }
 
     #[test]
     fn test_claims_serialization() {
-        let user_id = Uuid::new_v4();
         let claims = Claims {
-            user_id,
-            exp: 1735689600,
+            user_id: "user-123".to_string(),
+            exp: 1704067200,
         };
 
-        let user_id_claims = claims.user_id;
-        assert_eq!(user_id_claims, user_id);
-        assert_eq!(claims.exp, 1735689600);
+        let json = serde_json::to_string(&claims).unwrap();
+        let deserialized: Claims = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.user_id, claims.user_id);
+        assert_eq!(deserialized.exp, claims.exp);
+    }
+
+    #[test]
+    fn test_login_request_deserialization() {
+        let json = r#"{"email": "test@example.com", "password": "secret123"}"#;
+        let request: LoginRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(request.email, "test@example.com");
+        assert_eq!(request.password, "secret123");
+    }
+
+    #[test]
+    fn test_create_message_request_with_optional_id() {
+        // Without id
+        let json1 = r#"{"content": "Hello"}"#;
+        let request1: CreateMessageRequest = serde_json::from_str(json1).unwrap();
+        assert_eq!(request1.content, "Hello");
+        assert!(request1.id.is_none());
+
+        // With id
+        let json2 = r#"{"content": "Hello", "id": "custom-id"}"#;
+        let request2: CreateMessageRequest = serde_json::from_str(json2).unwrap();
+        assert_eq!(request2.content, "Hello");
+        assert_eq!(request2.id, Some("custom-id".to_string()));
+    }
+
+    #[test]
+    fn test_success_response_default() {
+        let response = SuccessResponse::default();
+        assert!(response.success);
     }
 }

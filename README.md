@@ -12,22 +12,29 @@ dissipate/
 └── PLAN.md           # Implementation plan
 ```
 
-## Getting Started
+## Development
 
-### Backend
+You can start both the backend and frontend simultaneously using the provided wrapper script in the root directory:
+
+```bash
+./dev.sh
+```
+
+### Backend Only
 
 ```bash
 cd backend
 cargo run
 ```
 
-### Frontend
+### Frontend Only
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
 
 ## Environment Variables
 

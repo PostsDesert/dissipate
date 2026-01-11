@@ -1,18 +1,29 @@
-import { Component, For, Show, onMount, createSignal } from 'solid-js';
+import { Component, For, Show, onMount, createSignal, createMemo } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import { messagesStore, fetchMessages, addMessage, deleteMessage } from '../stores/messagesStore';
+import { messagesStore, fetchMessages, addMessage, updateMessage, deleteMessage } from '../stores/messagesStore';
 import { authStore, logout } from '../stores/authStore';
 import { showToast } from '../stores/uiStore';
 import { MessageCard } from '../components/MessageCard';
 import { MessageInput } from '../components/MessageInput';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { LoadingSpinner } from '../components/LoadingSpinner';
+import { EditModal } from '../components/EditModal';
 import './Feed.css';
 
 export const Feed: Component = () => {
     const navigate = useNavigate();
     const [isLoading, setIsLoading] = createSignal(true);
     const [selectedMessage, setSelectedMessage] = createSignal<string | null>(null);
+    const [editingMessageId, setEditingMessageId] = createSignal<string | null>(null);
+    const [isEditSaving, setIsEditSaving] = createSignal(false);
+
+    // Get the content of the message being edited
+    const editingMessageContent = createMemo(() => {
+        const id = editingMessageId();
+        if (!id) return '';
+        const message = messagesStore.messages.find(m => m.id === id);
+        return message?.content || '';
+    });
 
     onMount(async () => {
         try {
@@ -47,6 +58,22 @@ export const Feed: Component = () => {
     const handleLogout = () => {
         logout();
         navigate('/login', { replace: true });
+    };
+
+    const handleEditSave = async (content: string) => {
+        const id = editingMessageId();
+        if (!id) return;
+
+        setIsEditSaving(true);
+        try {
+            await updateMessage(id, content);
+            showToast('Message updated!', 'success');
+            setEditingMessageId(null);
+        } catch (err) {
+            showToast('Failed to update message', 'error');
+        } finally {
+            setIsEditSaving(false);
+        }
     };
 
     return (
@@ -94,8 +121,8 @@ export const Feed: Component = () => {
                             {(message) => (
                                 <MessageCard
                                     message={message}
-                                    onClick={() => setSelectedMessage(message.id)}
-                                    onEdit={() => {/* TODO: implement edit modal */ }}
+                                    onClick={() => navigate(`/post/${message.id}`)}
+                                    onEdit={() => setEditingMessageId(message.id)}
                                     onDelete={() => handleDelete(message.id)}
                                 />
                             )}
@@ -105,6 +132,14 @@ export const Feed: Component = () => {
             </main>
 
             <MessageInput onSubmit={handleSubmit} disabled={messagesStore.isSyncing} />
+
+            <EditModal
+                isOpen={editingMessageId() !== null}
+                initialContent={editingMessageContent()}
+                onSave={handleEditSave}
+                onClose={() => setEditingMessageId(null)}
+                isLoading={isEditSaving()}
+            />
         </div>
     );
 };

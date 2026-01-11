@@ -1,223 +1,251 @@
-use axum::{extract::State, http::{header, StatusCode, Response}};
-use sqlx::SqlitePool;
-use uuid::Uuid;
-use serde::{Serialize, Deserialize};
+use axum::{
+    extract::State,
+    http::{header, StatusCode},
+    response::Response,
+    Json,
+};
+use chrono::{DateTime, Utc};
 
-use crate::db::get_user_messages;
-use crate::auth::Claims;
+use crate::{
+    db,
+    handlers::{ErrorResponse, SharedState},
+    models::MessageResponse,
+};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ExportMessage {
-    pub id: Uuid,
-    pub content: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
+/// GET /api/export/json
+/// Export all user messages as JSON
 pub async fn export_json(
-    State(pool): State<SqlitePool>,
-    _claims: Claims,
-) -> Result<Response<String>, StatusCode> {
-    match get_user_messages(&pool, &_claims.user_id).await {
-        Ok(messages) => {
-            let export_messages: Vec<ExportMessage> = messages
-                .iter()
-                .map(|(id, _user_id, content, created_at, updated_at)| ExportMessage {
-                    id: *id,
-                    content: content.clone(),
-                    created_at: created_at.to_rfc3339(),
-                    updated_at: updated_at.to_rfc3339(),
-                })
-                .collect();
+    State(state): State<SharedState>,
+    user_id: String,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let messages = db::get_messages_for_user(&state.pool, &user_id, None)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorResponse::new("Failed to fetch messages"),
+            )
+        })?;
 
-            let json = serde_json::to_string(&export_messages)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let message_responses: Vec<MessageResponse> =
+        messages.iter().map(|m| m.to_response()).collect();
 
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::CONTENT_DISPOSITION, "attachment; filename=\"messages.json\"")
-                .body(json)
-                .unwrap())
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    let json = serde_json::to_string_pretty(&message_responses).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorResponse::new("Failed to serialize messages"),
+        )
+    })?;
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"messages.json\"",
+        )
+        .body(json.into())
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorResponse::new("Failed to build response"),
+            )
+        })?;
+
+    Ok(response)
 }
 
+/// GET /api/export/markdown
+/// Export all user messages as Markdown
 pub async fn export_markdown(
-    State(pool): State<SqlitePool>,
-    _claims: Claims,
-) -> Result<Response<String>, StatusCode> {
-    match get_user_messages(&pool, &_claims.user_id).await {
-        Ok(messages) => {
-            let mut markdown = String::from("# Messages Export\n\nExported: ");
-            markdown.push_str(&chrono::Utc::now().format("%B %e, %Y").to_string());
-            markdown.push_str("\n\n---\n\n");
+    State(state): State<SharedState>,
+    user_id: String,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let messages = db::get_messages_for_user(&state.pool, &user_id, None)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorResponse::new("Failed to fetch messages"),
+            )
+        })?;
 
-            for (_, _user_id, content, created_at, _updated_at) in messages {
-                markdown.push_str("## ");
-                markdown.push_str(&created_at.format("%B %e, %Y at %I:%M %p").to_string());
-                markdown.push_str("\n\n");
-                markdown.push_str(content.as_str());
-                markdown.push_str("\n\n---\n\n");
-            }
+    let now = Utc::now();
+    let export_date = now.format("%B %d, %Y").to_string();
 
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/markdown; charset=utf-8")
-                .header(header::CONTENT_DISPOSITION, "attachment; filename=\"messages.md\"")
-                .body(markdown)
-                .unwrap())
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    let mut markdown = format!("# Messages Export\n\nExported: {}\n\n---\n\n", export_date);
+
+    for message in messages {
+        // Parse the created_at timestamp
+        let formatted_date = if let Ok(dt) = DateTime::parse_from_rfc3339(&message.created_at) {
+            dt.format("%B %d, %Y at %I:%M %p").to_string()
+        } else {
+            message.created_at.clone()
+        };
+
+        markdown.push_str(&format!(
+            "## {}\n\n{}\n\n---\n\n",
+            formatted_date, message.content
+        ));
     }
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"messages.md\"",
+        )
+        .body(markdown.into())
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorResponse::new("Failed to build response"),
+            )
+        })?;
+
+    Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::SqlitePool;
-    use crate::db;
-    use crate::auth;
+    use crate::{
+        db,
+        handlers::AppState,
+        models::Message,
+        utils::hash_password,
+    };
+    use http_body_util::BodyExt;
+    use std::sync::Arc;
 
-    async fn create_test_pool_and_user() -> (SqlitePool, Claims) {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        db::init_schema(&pool).await.unwrap();
-        
-        let user_id = Uuid::new_v4();
-        let now = chrono::Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
+    async fn setup_test_state() -> SharedState {
+        let pool = db::init_pool("sqlite::memory:").await.unwrap();
+        Arc::new(AppState {
+            pool,
+            jwt_secret: "test-secret".to_string(),
+        })
+    }
 
-        db::create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        let claims = Claims {
-            user_id,
-            exp: (chrono::Utc::now().timestamp() + 3600) as usize,
-        };
-
-        (pool, claims)
+    async fn create_test_user(state: &SharedState, email: &str) -> crate::models::User {
+        let (hash, salt) = hash_password("password123").unwrap();
+        let user = crate::models::User::new(email.to_string(), "testuser".to_string(), hash, salt);
+        db::create_user(&state.pool, &user).await.unwrap();
+        user
     }
 
     #[tokio::test]
-    async fn test_export_message_serialization() {
-        let id = Uuid::new_v4();
-        let now = chrono::Utc::now();
-        
-        let export_msg = ExportMessage {
-            id,
-            content: "Test message".to_string(),
-            created_at: now.to_rfc3339(),
-            updated_at: now.to_rfc3339(),
-        };
+    async fn test_export_json_empty() {
+        let state = setup_test_state().await;
+        let user = create_test_user(&state, "export@example.com").await;
 
-        let json = serde_json::to_string(&export_msg);
-        assert!(json.is_ok());
-        
-        let result = json.unwrap();
-        assert!(result.contains("Test message"));
-        assert!(result.contains(&id.to_string()));
+        let result = export_json(State(state), user.id).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Check content-type header
+        let content_type = response.headers().get(header::CONTENT_TYPE).unwrap();
+        assert_eq!(content_type, "application/json");
+
+        // Check content-disposition header
+        let content_disposition = response.headers().get(header::CONTENT_DISPOSITION).unwrap();
+        assert!(content_disposition
+            .to_str()
+            .unwrap()
+            .contains("messages.json"));
     }
 
     #[tokio::test]
-    async fn test_export_json_format() {
-        let (pool, claims) = create_test_pool_and_user().await;
-        
-        let now = chrono::Utc::now();
-        let message_id = Uuid::new_v4();
-        db::create_message(
-            &pool,
-            &message_id,
-            &claims.user_id,
-            "Hello, world!",
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+    async fn test_export_json_with_messages() {
+        let state = setup_test_state().await;
+        let user = create_test_user(&state, "jsonexport@example.com").await;
 
-        match get_user_messages(&pool, &claims.user_id).await {
-            Ok(messages) => {
-                assert_eq!(messages.len(), 1);
-                
-                let export_messages: Vec<ExportMessage> = messages
-                    .iter()
-                    .map(|(id, _user_id, content, created_at, updated_at)| ExportMessage {
-                        id: *id,
-                        content: content.clone(),
-                        created_at: created_at.to_rfc3339(),
-                        updated_at: updated_at.to_rfc3339(),
-                    })
-                    .collect();
+        // Create some messages
+        let msg1 = Message::new(user.id.clone(), "First message".to_string());
+        let msg2 = Message::new(user.id.clone(), "Second message".to_string());
+        db::create_message(&state.pool, &msg1).await.unwrap();
+        db::create_message(&state.pool, &msg2).await.unwrap();
 
-                assert_eq!(export_messages.len(), 1);
-                assert_eq!(export_messages[0].content, "Hello, world!");
-            }
-            Err(_) => panic!("Failed to get messages"),
-        }
+        let result = export_json(State(state), user.id).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+
+        // Parse body
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let json_str = String::from_utf8(bytes.to_vec()).unwrap();
+
+        let messages: Vec<MessageResponse> = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_export_markdown_empty() {
+        let state = setup_test_state().await;
+        let user = create_test_user(&state, "mdexport@example.com").await;
+
+        let result = export_markdown(State(state), user.id).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Check content-type header
+        let content_type = response.headers().get(header::CONTENT_TYPE).unwrap();
+        assert!(content_type.to_str().unwrap().contains("text/markdown"));
+
+        // Check content-disposition header
+        let content_disposition = response.headers().get(header::CONTENT_DISPOSITION).unwrap();
+        assert!(content_disposition
+            .to_str()
+            .unwrap()
+            .contains("messages.md"));
+    }
+
+    #[tokio::test]
+    async fn test_export_markdown_with_messages() {
+        let state = setup_test_state().await;
+        let user = create_test_user(&state, "mdwithmsg@example.com").await;
+
+        let msg = Message::new(user.id.clone(), "Test message content".to_string());
+        db::create_message(&state.pool, &msg).await.unwrap();
+
+        let result = export_markdown(State(state), user.id).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let markdown = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(markdown.contains("# Messages Export"));
+        assert!(markdown.contains("Test message content"));
     }
 
     #[tokio::test]
     async fn test_export_markdown_format() {
-        let (pool, claims) = create_test_pool_and_user().await;
-        
-        let now = chrono::Utc::now();
-        let message_id = Uuid::new_v4();
-        db::create_message(
-            &pool,
-            &message_id,
-            &claims.user_id,
-            "Hello, world!",
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+        let state = setup_test_state().await;
+        let user = create_test_user(&state, "mdformat@example.com").await;
 
-        match get_user_messages(&pool, &claims.user_id).await {
-            Ok(messages) => {
-                assert_eq!(messages.len(), 1);
-                
-                let mut markdown = String::from("# Messages Export\n\nExported: ");
-                markdown.push_str(&chrono::Utc::now().format("%B %e, %Y").to_string());
-                markdown.push_str("\n\n---\n\n");
+        let msg = Message::new(user.id.clone(), "My test message".to_string());
+        db::create_message(&state.pool, &msg).await.unwrap();
 
-                for (_, _user_id, content, created_at, _updated_at) in messages {
-                    markdown.push_str("## ");
-                    markdown.push_str(&created_at.format("%B %e, %Y at %I:%M %p").to_string());
-                    markdown.push_str("\n\n");
-                    markdown.push_str(content.as_str());
-                    markdown.push_str("\n\n---\n\n");
-                }
+        let result = export_markdown(State(state), user.id).await;
 
-                assert!(markdown.contains("# Messages Export"));
-                assert!(markdown.contains("Hello, world!"));
-                assert!(markdown.contains("##"));
-            }
-            Err(_) => panic!("Failed to get messages"),
-        }
-    }
+        let response = result.unwrap();
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let markdown = String::from_utf8(bytes.to_vec()).unwrap();
 
-    #[tokio::test]
-    async fn test_export_empty_messages() {
-        let (pool, claims) = create_test_pool_and_user().await;
-        
-        match get_user_messages(&pool, &claims.user_id).await {
-            Ok(messages) => {
-                assert_eq!(messages.len(), 0);
-            }
-            Err(_) => panic!("Failed to get messages"),
-        }
+        // Check structure
+        assert!(markdown.starts_with("# Messages Export"));
+        assert!(markdown.contains("Exported:"));
+        assert!(markdown.contains("---"));
+        assert!(markdown.contains("##")); // Date headers
+        assert!(markdown.contains("My test message"));
     }
 }

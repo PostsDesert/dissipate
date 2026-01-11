@@ -5,6 +5,7 @@ import { ToastContainer } from './components/Toast';
 import Login from './pages/Login';
 import Feed from './pages/Feed';
 import Settings from './pages/Settings';
+import PostDetail from './pages/PostDetail';
 import './index.css';
 
 // Protected route component
@@ -30,6 +31,7 @@ const App: Component = () => {
             <Router>
                 <Route path="/login" component={() => <PublicRoute component={Login} />} />
                 <Route path="/settings" component={() => <ProtectedRoute component={Settings} />} />
+                <Route path="/post/:id" component={() => <ProtectedRoute component={PostDetail} />} />
                 <Route path="/" component={() => <ProtectedRoute component={Feed} />} />
             </Router>
         </>

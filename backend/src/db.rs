@@ -1,15 +1,42 @@
-use sqlx::{SqlitePool, Row};
-use anyhow::Result;
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
+use sqlx::{migrate::MigrateDatabase, sqlite::SqlitePoolOptions, Pool, Sqlite};
+use thiserror::Error;
 
-pub async fn create_pool() -> Result<SqlitePool> {
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:dissipate.db".to_string());
-    let pool = SqlitePool::connect(&database_url).await?;
+use crate::models::{Message, User};
+
+#[derive(Debug, Error)]
+pub enum DbError {
+    #[error("Database error: {0}")]
+    SqlxError(#[from] sqlx::Error),
+    #[error("User not found")]
+    UserNotFound,
+    #[error("Message not found")]
+    MessageNotFound,
+    #[error("Email already exists")]
+    EmailAlreadyExists,
+}
+
+pub type DbPool = Pool<Sqlite>;
+
+/// Initialize the database connection pool
+pub async fn init_pool(database_url: &str) -> Result<DbPool, DbError> {
+    // Create database if it doesn't exist
+    if !Sqlite::database_exists(database_url).await.unwrap_or(false) {
+        Sqlite::create_database(database_url).await?;
+    }
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(database_url)
+        .await?;
+
+    // Run schema initialization
+    init_schema(&pool).await?;
+
     Ok(pool)
 }
 
-pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
+/// Initialize the database schema
+async fn init_schema(pool: &DbPool) -> Result<(), DbError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS users (
@@ -20,11 +47,30 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             salt TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
-        );
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
-        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS messages (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -32,585 +78,588 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);
+        )
         "#,
     )
     .execute(pool)
     .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC)
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Enable WAL mode
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(pool)
+        .await?;
+
     Ok(())
 }
 
-pub async fn create_user(
-    pool: &SqlitePool,
-    id: &Uuid,
-    email: &str,
-    username: &str,
-    password_hash: &str,
-    salt: &str,
-    created_at: &DateTime<Utc>,
-    updated_at: &DateTime<Utc>,
-) -> Result<()> {
+// ============ User Operations ============
+
+/// Find a user by email
+pub async fn find_user_by_email(pool: &DbPool, email: &str) -> Result<Option<User>, DbError> {
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_optional(pool)
+        .await?;
+
+    Ok(user)
+}
+
+/// Find a user by ID
+pub async fn find_user_by_id(pool: &DbPool, id: &str) -> Result<Option<User>, DbError> {
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+    Ok(user)
+}
+
+/// Create a new user
+/// Create a new user
+pub async fn create_user(pool: &DbPool, user: &User) -> Result<(), DbError> {
+    // Check if email already exists
+    if find_user_by_email(pool, &user.email).await?.is_some() {
+        return Err(DbError::EmailAlreadyExists);
+    }
+
     sqlx::query(
         r#"
         INSERT INTO users (id, email, username, password_hash, salt, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         "#,
     )
-    .bind(id.to_string())
-    .bind(email)
-    .bind(username)
-    .bind(password_hash)
-    .bind(salt)
-    .bind(created_at.to_rfc3339())
-    .bind(updated_at.to_rfc3339())
+    .bind(&user.id)
+    .bind(&user.email)
+    .bind(&user.username)
+    .bind(&user.password_hash)
+    .bind(&user.salt)
+    .bind(&user.created_at)
+    .bind(&user.updated_at)
     .execute(pool)
     .await?;
+
     Ok(())
 }
 
-pub async fn get_user_by_email(pool: &SqlitePool, email: &str) -> Result<Option<(Uuid, String, String, String, String, DateTime<Utc>, DateTime<Utc>)>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, email, username, password_hash, salt, created_at, updated_at
-        FROM users
-        WHERE email = ?
-        "#,
-    )
-    .bind(email)
-    .fetch_optional(pool)
-    .await?;
-
-    if let Some(row) = row {
-        Ok(Some((
-            Uuid::parse_str(&row.get::<String, _>("id"))?,
-            row.get("email"),
-            row.get("username"),
-            row.get("password_hash"),
-            row.get("salt"),
-            DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))?.with_timezone(&Utc),
-            DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?.with_timezone(&Utc),
-        )))
-    } else {
-        Ok(None)
-    }
+/// List all users
+pub async fn list_users(pool: &DbPool) -> Result<Vec<User>, DbError> {
+    let users = sqlx::query_as::<_, User>("SELECT * FROM users")
+        .fetch_all(pool)
+        .await?;
+    Ok(users)
 }
 
-pub async fn get_user_by_id(pool: &SqlitePool, user_id: &Uuid) -> Result<Option<(String, String, DateTime<Utc>, DateTime<Utc>)>> {
-    let row = sqlx::query(
-        r#"
-        SELECT email, username, created_at, updated_at
-        FROM users
-        WHERE id = ?
-        "#,
-    )
-    .bind(user_id.to_string())
-    .fetch_optional(pool)
-    .await?;
+/// Delete a user by email
+pub async fn delete_user_by_email(pool: &DbPool, email: &str) -> Result<(), DbError> {
+    let result = sqlx::query("DELETE FROM users WHERE email = ?")
+        .bind(email)
+        .execute(pool)
+        .await?;
 
-    if let Some(row) = row {
-        Ok(Some((
-            row.get("email"),
-            row.get("username"),
-            DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))?.with_timezone(&Utc),
-            DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?.with_timezone(&Utc),
-        )))
-    } else {
-        Ok(None)
+    if result.rows_affected() == 0 {
+        return Err(DbError::UserNotFound);
     }
-}
-
-pub async fn update_user_email(pool: &SqlitePool, user_id: &Uuid, email: &str) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE users SET email = ?, updated_at = ?
-        WHERE id = ?
-        "#,
-    )
-    .bind(email)
-    .bind(Utc::now().to_rfc3339())
-    .bind(user_id.to_string())
-    .execute(pool)
-    .await?;
     Ok(())
 }
 
-pub async fn update_user_username(pool: &SqlitePool, user_id: &Uuid, username: &str) -> Result<()> {
-    sqlx::query(
+/// Update user email
+pub async fn update_user_email(pool: &DbPool, user_id: &str, email: &str) -> Result<(), DbError> {
+    // Check if email already exists (and it's not the user's current email)
+    if let Some(existing_user) = find_user_by_email(pool, email).await? {
+        if existing_user.id != user_id {
+            return Err(DbError::EmailAlreadyExists);
+        }
+    }
+
+    let updated_at = chrono::Utc::now().to_rfc3339();
+
+    let result = sqlx::query(
         r#"
-        UPDATE users SET username = ?, updated_at = ?
-        WHERE id = ?
+        UPDATE users SET email = ?, updated_at = ? WHERE id = ?
+        "#,
+    )
+    .bind(email)
+    .bind(&updated_at)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::UserNotFound);
+    }
+
+    Ok(())
+}
+
+/// Update user username
+pub async fn update_user_username(
+    pool: &DbPool,
+    user_id: &str,
+    username: &str,
+) -> Result<(), DbError> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+
+    let result = sqlx::query(
+        r#"
+        UPDATE users SET username = ?, updated_at = ? WHERE id = ?
         "#,
     )
     .bind(username)
-    .bind(Utc::now().to_rfc3339())
-    .bind(user_id.to_string())
+    .bind(&updated_at)
+    .bind(user_id)
     .execute(pool)
     .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::UserNotFound);
+    }
+
     Ok(())
 }
 
-pub async fn update_user_password(pool: &SqlitePool, user_id: &Uuid, password_hash: &str, salt: &str) -> Result<()> {
-    sqlx::query(
+/// Update user password
+pub async fn update_user_password(
+    pool: &DbPool,
+    user_id: &str,
+    password_hash: &str,
+    salt: &str,
+) -> Result<(), DbError> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+
+    let result = sqlx::query(
         r#"
-        UPDATE users SET password_hash = ?, salt = ?, updated_at = ?
-        WHERE id = ?
+        UPDATE users SET password_hash = ?, salt = ?, updated_at = ? WHERE id = ?
         "#,
     )
     .bind(password_hash)
     .bind(salt)
-    .bind(Utc::now().to_rfc3339())
-    .bind(user_id.to_string())
+    .bind(&updated_at)
+    .bind(user_id)
     .execute(pool)
     .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(DbError::UserNotFound);
+    }
+
     Ok(())
 }
 
-pub async fn create_message(
-    pool: &SqlitePool,
-    id: &Uuid,
-    user_id: &Uuid,
-    content: &str,
-    created_at: &DateTime<Utc>,
-    updated_at: &DateTime<Utc>,
-) -> Result<()> {
+// ============ Message Operations ============
+
+/// Get all messages for a user, optionally filtered by timestamp
+pub async fn get_messages_for_user(
+    pool: &DbPool,
+    user_id: &str,
+    since: Option<&str>,
+) -> Result<Vec<Message>, DbError> {
+    let messages = if let Some(since_timestamp) = since {
+        sqlx::query_as::<_, Message>(
+            r#"
+            SELECT * FROM messages 
+            WHERE user_id = ? AND (created_at > ? OR updated_at > ?)
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .bind(since_timestamp)
+        .bind(since_timestamp)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, Message>(
+            r#"
+            SELECT * FROM messages 
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(messages)
+}
+
+/// Create a new message
+pub async fn create_message(pool: &DbPool, message: &Message) -> Result<Message, DbError> {
     sqlx::query(
         r#"
         INSERT INTO messages (id, user_id, content, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
         "#,
     )
-    .bind(id.to_string())
-    .bind(user_id.to_string())
-    .bind(content)
-    .bind(created_at.to_rfc3339())
-    .bind(updated_at.to_rfc3339())
+    .bind(&message.id)
+    .bind(&message.user_id)
+    .bind(&message.content)
+    .bind(&message.created_at)
+    .bind(&message.updated_at)
     .execute(pool)
     .await?;
-    Ok(())
+
+    Ok(message.clone())
 }
 
-pub async fn get_user_messages(pool: &SqlitePool, user_id: &Uuid) -> Result<Vec<(Uuid, Uuid, String, DateTime<Utc>, DateTime<Utc>)>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT id, user_id, content, created_at, updated_at
-        FROM messages
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-        "#,
-    )
-    .bind(user_id.to_string())
-    .fetch_all(pool)
-    .await?;
+/// Get a message by ID
+pub async fn get_message_by_id(pool: &DbPool, id: &str) -> Result<Option<Message>, DbError> {
+    let message = sqlx::query_as::<_, Message>("SELECT * FROM messages WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
 
-    let messages = rows
-        .iter()
-        .map(|row| {
-            Ok((
-                Uuid::parse_str(&row.get::<String, _>("id"))?,
-                Uuid::parse_str(&row.get::<String, _>("user_id"))?,
-                row.get("content"),
-                DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))?.with_timezone(&Utc),
-                DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?.with_timezone(&Utc),
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(messages)
+    Ok(message)
 }
 
-pub async fn get_message(pool: &SqlitePool, message_id: &Uuid) -> Result<Option<(Uuid, Uuid, String, DateTime<Utc>, DateTime<Utc>)>> {
-    let row = sqlx::query(
+/// Update a message
+pub async fn update_message(
+    pool: &DbPool,
+    id: &str,
+    user_id: &str,
+    content: &str,
+) -> Result<Message, DbError> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+
+    let result = sqlx::query(
         r#"
-        SELECT id, user_id, content, created_at, updated_at
-        FROM messages
-        WHERE id = ?
+        UPDATE messages SET content = ?, updated_at = ? WHERE id = ? AND user_id = ?
         "#,
     )
-    .bind(message_id.to_string())
-    .fetch_optional(pool)
+    .bind(content)
+    .bind(&updated_at)
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
     .await?;
 
-    if let Some(row) = row {
-        Ok(Some((
-            Uuid::parse_str(&row.get::<String, _>("id"))?,
-            Uuid::parse_str(&row.get::<String, _>("user_id"))?,
-            row.get("content"),
-            DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))?.with_timezone(&Utc),
-            DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?.with_timezone(&Utc),
-        )))
-    } else {
-        Ok(None)
+    if result.rows_affected() == 0 {
+        return Err(DbError::MessageNotFound);
     }
+
+    // Fetch and return updated message
+    get_message_by_id(pool, id)
+        .await?
+        .ok_or(DbError::MessageNotFound)
 }
 
-pub async fn update_message(pool: &SqlitePool, message_id: &Uuid, content: &str) -> Result<()> {
-    sqlx::query(
+/// Delete a message
+pub async fn delete_message(pool: &DbPool, id: &str, user_id: &str) -> Result<(), DbError> {
+    let result = sqlx::query(
         r#"
-        UPDATE messages SET content = ?, updated_at = ?
-        WHERE id = ?
+        DELETE FROM messages WHERE id = ? AND user_id = ?
         "#,
     )
-    .bind(content)
-    .bind(Utc::now().to_rfc3339())
-    .bind(message_id.to_string())
+    .bind(id)
+    .bind(user_id)
     .execute(pool)
     .await?;
-    Ok(())
-}
 
-pub async fn delete_message(pool: &SqlitePool, message_id: &Uuid) -> Result<()> {
-    sqlx::query(
-        r#"
-        DELETE FROM messages WHERE id = ?
-        "#,
-    )
-    .bind(message_id.to_string())
-    .execute(pool)
-    .await?;
+    if result.rows_affected() == 0 {
+        return Err(DbError::MessageNotFound);
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth;
+    use crate::utils::hash_password;
 
-    async fn create_test_pool() -> Result<SqlitePool> {
-        let pool = SqlitePool::connect("sqlite::memory:").await?;
-        init_schema(&pool).await?;
-        Ok(pool)
+    async fn setup_test_db() -> DbPool {
+        // Use in-memory SQLite database for tests
+        init_pool("sqlite::memory:").await.unwrap()
+    }
+
+    fn create_test_user(email: &str) -> User {
+        let (hash, salt) = hash_password("password123").unwrap();
+        User::new(
+            email.to_string(),
+            "testuser".to_string(),
+            hash,
+            salt,
+        )
     }
 
     #[tokio::test]
-    async fn test_create_pool() {
-        let pool = create_test_pool().await;
-        assert!(pool.is_ok());
+    async fn test_init_pool_creates_tables() {
+        let pool = setup_test_db().await;
+
+        // Tables should exist
+        let result = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+
+        let result = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert!(result.is_some());
     }
 
     #[tokio::test]
-    async fn test_init_schema() {
-        let pool = create_test_pool().await.unwrap();
-        let result = init_schema(&pool).await;
+    async fn test_create_user_success() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("test@example.com");
+
+        let result = create_user(&pool, &user).await;
+
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_schema_tables_exist() {
-        let pool = create_test_pool().await.unwrap();
-        
-        let users_exist: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='users')"
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        
-        let messages_exist: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages')"
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        
-        assert!(users_exist);
-        assert!(messages_exist);
+    async fn test_create_user_duplicate_email_fails() {
+        let pool = setup_test_db().await;
+        let user1 = create_test_user("duplicate@example.com");
+        let user2 = create_test_user("duplicate@example.com");
+
+        create_user(&pool, &user1).await.unwrap();
+        let result = create_user(&pool, &user2).await;
+
+        assert!(matches!(result, Err(DbError::EmailAlreadyExists)));
     }
 
     #[tokio::test]
-    async fn test_create_and_get_user() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
+    async fn test_find_user_by_email_exists() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("find@example.com");
+        create_user(&pool, &user).await.unwrap();
 
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+        let found = find_user_by_email(&pool, "find@example.com").await.unwrap();
 
-        let user = get_user_by_email(&pool, "test@example.com")
-            .await
-            .unwrap();
-        
-        assert!(user.is_some());
-        let user = user.unwrap();
-        assert_eq!(user.0, user_id);
-        assert_eq!(user.1, "test@example.com");
-        assert_eq!(user.2, "testuser");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().email, "find@example.com");
     }
 
     #[tokio::test]
-    async fn test_get_user_by_id() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
+    async fn test_find_user_by_email_not_exists() {
+        let pool = setup_test_db().await;
 
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+        let found = find_user_by_email(&pool, "nonexistent@example.com").await.unwrap();
 
-        let user = get_user_by_id(&pool, &user_id)
-            .await
-            .unwrap();
-        
-        assert!(user.is_some());
-        let user = user.unwrap();
-        assert_eq!(user.0, "test@example.com");
-        assert_eq!(user.1, "testuser");
+        assert!(found.is_none());
     }
 
     #[tokio::test]
-    async fn test_create_and_get_message() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
+    async fn test_find_user_by_id() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("byid@example.com");
+        let user_id = user.id.clone();
+        create_user(&pool, &user).await.unwrap();
 
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+        let found = find_user_by_id(&pool, &user_id).await.unwrap();
 
-        let message_id = Uuid::new_v4();
-        create_message(
-            &pool,
-            &message_id,
-            &user_id,
-            "Hello, world!",
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        let message = get_message(&pool, &message_id)
-            .await
-            .unwrap();
-        
-        assert!(message.is_some());
-        let message = message.unwrap();
-        assert_eq!(message.0, message_id);
-        assert_eq!(message.2, "Hello, world!");
-    }
-
-    #[tokio::test]
-    async fn test_get_user_messages() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
-
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        let msg1_id = Uuid::new_v4();
-        let msg2_id = Uuid::new_v4();
-        create_message(&pool, &msg1_id, &user_id, "First message", &now, &now)
-            .await
-            .unwrap();
-        create_message(&pool, &msg2_id, &user_id, "Second message", &now, &now)
-            .await
-            .unwrap();
-
-        let messages = get_user_messages(&pool, &user_id)
-            .await
-            .unwrap();
-        
-        assert_eq!(messages.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_update_message() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
-
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        let message_id = Uuid::new_v4();
-        create_message(
-            &pool,
-            &message_id,
-            &user_id,
-            "Hello, world!",
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        update_message(&pool, &message_id, "Updated content")
-            .await
-            .unwrap();
-
-        let message = get_message(&pool, &message_id)
-            .await
-            .unwrap();
-        
-        assert_eq!(message.unwrap().2, "Updated content");
-    }
-
-    #[tokio::test]
-    async fn test_delete_message() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
-
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        let message_id = Uuid::new_v4();
-        create_message(
-            &pool,
-            &message_id,
-            &user_id,
-            "Hello, world!",
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        delete_message(&pool, &message_id)
-            .await
-            .unwrap();
-
-        let message = get_message(&pool, &message_id)
-            .await
-            .unwrap();
-        
-        assert!(message.is_none());
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, user_id);
     }
 
     #[tokio::test]
     async fn test_update_user_email() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
+        let pool = setup_test_db().await;
+        let user = create_test_user("old@example.com");
+        let user_id = user.id.clone();
+        create_user(&pool, &user).await.unwrap();
 
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+        update_user_email(&pool, &user_id, "new@example.com").await.unwrap();
 
-        update_user_email(&pool, &user_id, "newemail@example.com")
-            .await
-            .unwrap();
-
-        let user = get_user_by_id(&pool, &user_id)
-            .await
-            .unwrap();
-        
-        assert_eq!(user.unwrap().0, "newemail@example.com");
+        let found = find_user_by_id(&pool, &user_id).await.unwrap().unwrap();
+        assert_eq!(found.email, "new@example.com");
     }
 
     #[tokio::test]
     async fn test_update_user_username() {
-        let pool = create_test_pool().await.unwrap();
-        let user_id = Uuid::new_v4();
-        let now = Utc::now();
-        let password_hash = auth::hash_password("password123").unwrap();
-        let salt = "test_salt".to_string();
+        let pool = setup_test_db().await;
+        let user = create_test_user("username@example.com");
+        let user_id = user.id.clone();
+        create_user(&pool, &user).await.unwrap();
 
-        create_user(
-            &pool,
-            &user_id,
-            "test@example.com",
-            "testuser",
-            &password_hash,
-            &salt,
-            &now,
-            &now,
-        )
-        .await
-        .unwrap();
+        update_user_username(&pool, &user_id, "newusername").await.unwrap();
 
-        update_user_username(&pool, &user_id, "newusername")
+        let found = find_user_by_id(&pool, &user_id).await.unwrap().unwrap();
+        assert_eq!(found.username, "newusername");
+    }
+
+    #[tokio::test]
+    async fn test_update_user_password() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("password@example.com");
+        let user_id = user.id.clone();
+        let old_hash = user.password_hash.clone();
+        create_user(&pool, &user).await.unwrap();
+
+        let (new_hash, new_salt) = hash_password("newpassword").unwrap();
+        update_user_password(&pool, &user_id, &new_hash, &new_salt).await.unwrap();
+
+        let found = find_user_by_id(&pool, &user_id).await.unwrap().unwrap();
+        assert_ne!(found.password_hash, old_hash);
+    }
+
+    #[tokio::test]
+    async fn test_create_message() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("msg@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let message = Message::new(user.id.clone(), "Hello, world!".to_string());
+        let created = create_message(&pool, &message).await.unwrap();
+
+        assert_eq!(created.content, "Hello, world!");
+        assert_eq!(created.user_id, user.id);
+    }
+
+    #[tokio::test]
+    async fn test_get_messages_for_user() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("getmsgs@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let msg1 = Message::new(user.id.clone(), "Message 1".to_string());
+        let msg2 = Message::new(user.id.clone(), "Message 2".to_string());
+        create_message(&pool, &msg1).await.unwrap();
+        create_message(&pool, &msg2).await.unwrap();
+
+        let messages = get_messages_for_user(&pool, &user.id, None).await.unwrap();
+
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_messages_for_user_filters_by_since() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("since@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let msg1 = Message::new(user.id.clone(), "Old message".to_string());
+        create_message(&pool, &msg1).await.unwrap();
+
+        // Wait a moment and create another message
+        let future_timestamp = chrono::Utc::now().to_rfc3339();
+
+        let messages = get_messages_for_user(&pool, &user.id, Some(&future_timestamp))
             .await
             .unwrap();
 
-        let user = get_user_by_id(&pool, &user_id)
+        // No messages should be newer than the future timestamp
+        assert_eq!(messages.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_message_by_id() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("getbyid@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let message = Message::new(user.id.clone(), "Find me!".to_string());
+        let msg_id = message.id.clone();
+        create_message(&pool, &message).await.unwrap();
+
+        let found = get_message_by_id(&pool, &msg_id).await.unwrap();
+
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().content, "Find me!");
+    }
+
+    #[tokio::test]
+    async fn test_update_message() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("update@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let message = Message::new(user.id.clone(), "Original content".to_string());
+        let msg_id = message.id.clone();
+        create_message(&pool, &message).await.unwrap();
+
+        let updated = update_message(&pool, &msg_id, &user.id, "Updated content")
             .await
             .unwrap();
-        
-        assert_eq!(user.unwrap().1, "newusername");
+
+        assert_eq!(updated.content, "Updated content");
+    }
+
+    #[tokio::test]
+    async fn test_update_message_wrong_user_fails() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("owner@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let message = Message::new(user.id.clone(), "My message".to_string());
+        let msg_id = message.id.clone();
+        create_message(&pool, &message).await.unwrap();
+
+        let result = update_message(&pool, &msg_id, "wrong-user-id", "Hacked!")
+            .await;
+
+        assert!(matches!(result, Err(DbError::MessageNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_delete_message() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("delete@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let message = Message::new(user.id.clone(), "Delete me".to_string());
+        let msg_id = message.id.clone();
+        create_message(&pool, &message).await.unwrap();
+
+        delete_message(&pool, &msg_id, &user.id).await.unwrap();
+
+        let found = get_message_by_id(&pool, &msg_id).await.unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_wrong_user_fails() {
+        let pool = setup_test_db().await;
+        let user = create_test_user("nodelete@example.com");
+        create_user(&pool, &user).await.unwrap();
+
+        let message = Message::new(user.id.clone(), "Protected".to_string());
+        let msg_id = message.id.clone();
+        create_message(&pool, &message).await.unwrap();
+
+        let result = delete_message(&pool, &msg_id, "wrong-user-id").await;
+
+        assert!(matches!(result, Err(DbError::MessageNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_user_isolation_messages() {
+        let pool = setup_test_db().await;
+        let user1 = create_test_user("user1@example.com");
+        let user2 = create_test_user("user2@example.com");
+        create_user(&pool, &user1).await.unwrap();
+        create_user(&pool, &user2).await.unwrap();
+
+        let msg1 = Message::new(user1.id.clone(), "User 1's message".to_string());
+        let msg2 = Message::new(user2.id.clone(), "User 2's message".to_string());
+        create_message(&pool, &msg1).await.unwrap();
+        create_message(&pool, &msg2).await.unwrap();
+
+        let user1_messages = get_messages_for_user(&pool, &user1.id, None).await.unwrap();
+        let user2_messages = get_messages_for_user(&pool, &user2.id, None).await.unwrap();
+
+        assert_eq!(user1_messages.len(), 1);
+        assert_eq!(user2_messages.len(), 1);
+        assert_eq!(user1_messages[0].content, "User 1's message");
+        assert_eq!(user2_messages[0].content, "User 2's message");
     }
 }

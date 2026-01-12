@@ -31,8 +31,7 @@ JWT_SECRET=your-secret-key-here
 EOF
 
 # Build and run
-cd docker
-docker-compose up --build
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 ```
 
 Access the app at: `http://localhost:57283`
@@ -50,8 +49,7 @@ RUST_LOG=info
 EOF
 
 # Build and run
-cd docker
-docker-compose up -d --build
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 ```
 
 **Note:** You'll need a reverse proxy (nginx, Caddy, Traefik) to handle HTTPS and forward traffic to port 3000.
@@ -69,8 +67,7 @@ RUST_LOG=info
 EOF
 
 # Build and run
-cd docker
-docker-compose up -d --build
+docker compose -f docker/docker-compose.yml --env-file .env up -d --build
 ```
 
 ## Manual Docker Build (Without Docker Compose)

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Quick deployment script for Dissipate
+# This script helps you deploy with the correct configuration
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}Dissipate Deployment Helper${NC}"
+echo ""
+
+# Check if .env exists
+if [ ! -f .env ]; then
+    echo -e "${YELLOW}No .env file found. Creating one...${NC}"
+    
+    # Prompt for API URL
+    echo ""
+    echo "Enter the API URL (where the backend will be accessible from browsers):"
+    echo "Examples:"
+    echo "  - Local testing: http://localhost:57283/api"
+    echo "  - Production: https://yourdomain.com/api"
+    read -p "API URL: " api_url
+    
+    # Prompt for JWT secret
+    echo ""
+    echo "Enter a JWT secret (minimum 32 characters, random string):"
+    echo "You can generate one with: openssl rand -base64 32"
+    read -p "JWT Secret: " jwt_secret
+    
+    # Create .env file
+    cat > .env << EOF
+# Frontend Build Configuration
+VITE_API_URL=$api_url
+
+# Backend Runtime Configuration
+JWT_SECRET=$jwt_secret
+RUST_LOG=info
+EOF
+    
+    echo -e "${GREEN}Created .env file${NC}"
+else
+    echo -e "${GREEN}.env file already exists${NC}"
+fi
+
+echo ""
+echo -e "${YELLOW}Current configuration:${NC}"
+cat .env | grep -v "^#" | grep -v "^$"
+
+echo ""
+read -p "Build and deploy with this configuration? (y/n) " -n 1 -r
+echo
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo -e "${GREEN}Building and deploying...${NC}"
+    cd docker
+    docker-compose up --build -d
+    
+    echo ""
+    echo -e "${GREEN}Deployment complete!${NC}"
+    echo ""
+    echo "View logs with: docker-compose -f docker/docker-compose.yml logs -f"
+    echo "Stop with: docker-compose -f docker/docker-compose.yml down"
+    echo ""
+    echo "To manage users, exec into the container:"
+    echo "  docker exec -it dissipate /bin/bash"
+    echo "  Then run: manage_users add email@example.com username 'password'"
+else
+    echo "Deployment cancelled"
+fi

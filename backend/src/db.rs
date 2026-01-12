@@ -131,7 +131,7 @@ pub async fn find_user_by_id(pool: &DbPool, id: &str) -> Result<Option<User>, Db
 }
 
 /// Create a new user
-/// Create a new user
+#[allow(dead_code)]
 pub async fn create_user(pool: &DbPool, user: &User) -> Result<(), DbError> {
     // Check if email already exists
     if find_user_by_email(pool, &user.email).await?.is_some() {
@@ -158,6 +158,7 @@ pub async fn create_user(pool: &DbPool, user: &User) -> Result<(), DbError> {
 }
 
 /// List all users
+#[allow(dead_code)]
 pub async fn list_users(pool: &DbPool) -> Result<Vec<User>, DbError> {
     let users = sqlx::query_as::<_, User>("SELECT * FROM users")
         .fetch_all(pool)
@@ -166,6 +167,7 @@ pub async fn list_users(pool: &DbPool) -> Result<Vec<User>, DbError> {
 }
 
 /// Delete a user by email
+#[allow(dead_code)]
 pub async fn delete_user_by_email(pool: &DbPool, email: &str) -> Result<(), DbError> {
     let result = sqlx::query("DELETE FROM users WHERE email = ?")
         .bind(email)

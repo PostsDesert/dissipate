@@ -56,13 +56,12 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${GREEN}Building and deploying...${NC}"
     cd docker
-    docker-compose up --build -d
+    docker compose up --build -d
     
     echo ""
     echo -e "${GREEN}Deployment complete!${NC}"
-    echo ""
-    echo "View logs with: docker-compose -f docker/docker-compose.yml logs -f"
-    echo "Stop with: docker-compose -f docker/docker-compose.yml down"
+    echo "View logs with: docker compose -f docker/docker-compose.yml logs -f"
+    echo "Stop with: docker compose -f docker/docker-compose.yml down"
     echo ""
     echo "To manage users, exec into the container:"
     echo "  docker exec -it dissipate /bin/bash"

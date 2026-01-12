@@ -1,5 +1,11 @@
 # --- Stage 1: Build Frontend ---
 FROM node:20-slim AS frontend-builder
+
+# Accept API URL as build argument - this must be set at build time
+# Example: docker build --build-arg VITE_API_URL=https://api.example.com/api ...
+ARG VITE_API_URL
+ENV VITE_API_URL=${VITE_API_URL}
+
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install

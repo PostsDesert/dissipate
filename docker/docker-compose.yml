@@ -1,0 +1,17 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "57283:3000" # Maps Host 8080 to Rust 3000
+    environment:
+      - DATABASE_URL=sqlite:///app/database/dissipate.db
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
+      - RUST_LOG=info
+    volumes:
+      - dissipate-data:/app/database
+    restart: unless-stopped
+
+volumes:
+  dissipate-data:

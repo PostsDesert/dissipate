@@ -17,6 +17,7 @@ pub struct User {
 
 impl User {
     /// Create a new user with generated UUID and timestamps
+    #[allow(dead_code)]
     pub fn new(email: String, username: String, password_hash: String, salt: String) -> Self {
         let now = Utc::now().to_rfc3339();
         Self {

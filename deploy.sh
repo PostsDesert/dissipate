@@ -60,7 +60,6 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     
     echo ""
     echo -e "${GREEN}Deployment complete!${NC}"
-    echo ""
     echo "View logs with: docker compose -f docker/docker-compose.yml logs -f"
     echo "Stop with: docker compose -f docker/docker-compose.yml down"
     echo ""

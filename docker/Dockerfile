@@ -1,5 +1,11 @@
 # --- Stage 1: Build Frontend ---
 FROM node:20-slim AS frontend-builder
+
+# Accept API URL as build argument - this must be set at build time
+# Example: docker build --build-arg VITE_API_URL=https://api.example.com/api ...
+ARG VITE_API_URL
+ENV VITE_API_URL=${VITE_API_URL}
+
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
@@ -7,7 +13,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 2: Build Backend ---
-FROM rust:1.75-slim-bookworm AS backend-builder
+FROM rust:1.92.0-slim-bookworm AS backend-builder
 WORKDIR /app
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*

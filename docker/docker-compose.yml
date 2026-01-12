@@ -1,14 +1,21 @@
+name: dissipate
 services:
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        # IMPORTANT: Set this to your actual domain/hostname
+        # The frontend needs this at BUILD time to know where to send API requests
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000/api}
+    container_name: dissipate
     ports:
-      - "57283:3000" # Maps Host 8080 to Rust 3000
+      - "57283:3000" # Maps Host 57283 to Container 3000
     environment:
+      # Backend runtime configuration
       - DATABASE_URL=sqlite:///app/database/dissipate.db
       - JWT_SECRET=${JWT_SECRET:-change_me_in_production}
-      - RUST_LOG=info
+      - RUST_LOG=${RUST_LOG:-info}
     volumes:
       - dissipate-data:/app/database
     restart: unless-stopped

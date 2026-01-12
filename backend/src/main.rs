@@ -68,7 +68,7 @@ fn create_router(state: SharedState) -> Router {
     Router::new()
         .merge(public_routes)
         .merge(protected_routes)
-        .fallback_service(ServeDir::new("dist").fallback(axum::body::Body::from(include_str!("../dist/index.html"))))
+        .fallback_service(ServeDir::new("dist"))
         .layer(middleware::cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
